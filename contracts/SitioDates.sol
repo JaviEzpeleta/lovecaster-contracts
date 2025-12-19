@@ -32,10 +32,11 @@ contract SitioDates is Ownable, ReentrancyGuard {
     uint256[] public registeredFids;            // Array of all registered FIDs
 
     address payable public platformWallet;
-    uint256 public platformFeePercentage;       // e.g., 5 = 5%
+    uint256 public platformFeePercentage;       // In basis points (e.g., 500 = 5%)
 
     uint256 public constant UPDATE_COOLDOWN = 1 hours;
-    uint256 public constant MAX_PLATFORM_FEE = 20; // Max 20%
+    uint256 public constant BASIS_POINTS = 10000;  // 100% = 10000 basis points
+    uint256 public constant MAX_PLATFORM_FEE = 2000; // Max 20% = 2000 basis points
 
     uint256 public totalDatesCount;             // Total number of dates paid
     uint256 public totalVolumeETH;              // Total ETH volume
@@ -219,8 +220,8 @@ contract SitioDates is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Update the platform fee percentage
-     * @param _newFee New fee percentage (0-20)
+     * @notice Update the platform fee in basis points
+     * @param _newFee New fee in basis points (0-2000, where 100 = 1%)
      */
     function setPlatformFee(uint256 _newFee) external onlyOwner {
         require(_newFee <= MAX_PLATFORM_FEE, "Fee too high");
@@ -246,8 +247,8 @@ contract SitioDates is Ownable, ReentrancyGuard {
         require(player.active, "Player not active");
         require(msg.value >= player.minPrice, "Payment below minimum price");
 
-        // Calculate fee distribution
-        uint256 platformShare = (msg.value * platformFeePercentage) / 100;
+        // Calculate fee distribution using basis points for precision
+        uint256 platformShare = (msg.value * platformFeePercentage) / BASIS_POINTS;
         uint256 playerShare = msg.value - platformShare;
 
         // Update statistics
@@ -395,7 +396,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
         uint256 playerShare,
         uint256 platformShare
     ) {
-        platformShare = (_amount * platformFeePercentage) / 100;
+        platformShare = (_amount * platformFeePercentage) / BASIS_POINTS;
         playerShare = _amount - platformShare;
         return (playerShare, platformShare);
     }
