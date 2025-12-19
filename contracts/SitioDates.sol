@@ -20,7 +20,6 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
     // ============================================
 
     struct Player {
-        uint256 fid;            // Farcaster ID
         address payable wallet; // Wallet to receive payments
         uint256 minPrice;       // Minimum ETH required for a date
         bool active;            // Whether player can receive dates
@@ -129,7 +128,6 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
         require(!players[_fid].exists, "Player already registered");
 
         players[_fid] = Player({
-            fid: _fid,
             wallet: _wallet,
             minPrice: _minPrice,
             active: true,
@@ -355,7 +353,7 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
     ) {
         Player storage player = players[_fid];
         return (
-            player.fid,
+            _fid,
             player.wallet,
             player.minPrice,
             player.active,
