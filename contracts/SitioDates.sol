@@ -56,6 +56,7 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
         uint256 indexed fid,
         address indexed wallet,
         uint256 minPrice,
+        bool active,
         uint256 timestamp
     );
 
@@ -139,7 +140,7 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
 
         _registeredFids.add(_fid);
 
-        emit PlayerRegistered(_fid, _wallet, _minPrice, block.timestamp);
+        emit PlayerRegistered(_fid, _wallet, _minPrice, true, block.timestamp);
     }
 
     /**
