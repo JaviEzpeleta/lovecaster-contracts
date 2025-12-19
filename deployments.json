@@ -1,0 +1,27 @@
+{
+  "PredictionMarketFactory": {
+    "base-sepolia": {
+      "address": "0x2c34b6bcad66c98fffb43f52ae2538fe41a63f4e",
+      "deployedAt": "2025-11-06 12:22:27 UTC",
+      "deployer": "0x061294782b7c73a675cf54124853c8133e3463fc",
+      "network": "base-sepolia",
+      "blockExplorer": "https://sepolia.basescan.org/address/0x2c34b6bcad66c98fffb43f52ae2538fe41a63f4e"
+    },
+    "base-mainnet": {
+      "address": "0xa3b9029749a2991f144c576e14d465a93b453ac0",
+      "deployedAt": "2025-11-04 20:04:35 UTC",
+      "deployer": "0x061294782b7c73a675cf54124853c8133e3463fc",
+      "network": "base-mainnet",
+      "blockExplorer": "https://basescan.org/address/0xa3b9029749a2991f144c576e14d465a93b453ac0"
+    }
+  },
+  "SitioDates": {
+    "base-sepolia": {
+      "address": "0xc5beeb42676b838b23de4f812fa36ef751354903",
+      "deployedAt": "2025-12-17 16:06:16 UTC",
+      "deployer": "0x061294782b7c73a675cf54124853c8133e3463fc",
+      "network": "base-sepolia",
+      "blockExplorer": "https://sepolia.basescan.org/address/0xc5beeb42676b838b23de4f812fa36ef751354903"
+    }
+  }
+}

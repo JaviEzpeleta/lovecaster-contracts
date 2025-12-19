@@ -1,0 +1,1033 @@
+import { loadFixture, time } from "@nomicfoundation/hardhat-toolbox-viem/network-helpers";
+import { expect } from "chai";
+import hre from "hardhat";
+import { parseEther } from "viem";
+
+describe("PredictionMarketFactory", function () {
+  async function deployFactoryFixture() {
+    const [owner, user1, user2, user3] = await hre.viem.getWalletClients();
+
+    // Deploy MockUSDC
+    const usdc = await hre.viem.deployContract("MockUSDC");
+
+    // Mint USDC to all users
+    const mintAmount = 1_000_000_000_000_000n; // 1B USDC
+    await usdc.write.mint([owner.account.address, mintAmount]);
+    await usdc.write.mint([user1.account.address, mintAmount]);
+    await usdc.write.mint([user2.account.address, mintAmount]);
+    await usdc.write.mint([user3.account.address, mintAmount]);
+
+    const factory = await hre.viem.deployContract("PredictionMarketFactory", [
+      owner.account.address, // platformFeeRecipient
+      user1.account.address, // secondPlatformFeeRecipient
+    ]);
+
+    const publicClient = await hre.viem.getPublicClient();
+
+    return { factory, usdc, owner, user1, user2, user3, publicClient };
+  }
+
+  describe("Deployment", function () {
+    it("Should deploy successfully", async function () {
+      const { factory } = await loadFixture(deployFactoryFixture);
+      expect(factory.address).to.match(/^0x[a-fA-F0-9]{40}$/);
+    });
+
+    it("Should start with totalMarketsCreated = 0", async function () {
+      const { factory } = await loadFixture(deployFactoryFixture);
+      expect(await factory.read.totalMarketsCreated()).to.equal(0n);
+    });
+
+    it("Should have correct MAX_FEE_PERCENTAGE (legacy)", async function () {
+      const { factory } = await loadFixture(deployFactoryFixture);
+      expect(await factory.read.MAX_FEE_PERCENTAGE()).to.equal(20n);
+    });
+
+    it("Should have correct PLATFORM_FEE_PERCENTAGE", async function () {
+      const { factory } = await loadFixture(deployFactoryFixture);
+      expect(await factory.read.PLATFORM_FEE_PERCENTAGE()).to.equal(3n);
+    });
+
+    it("Should have correct MAX_CREATOR_FEE_PERCENTAGE", async function () {
+      const { factory } = await loadFixture(deployFactoryFixture);
+      expect(await factory.read.MAX_CREATOR_FEE_PERCENTAGE()).to.equal(17n);
+    });
+  });
+
+  describe("Market Creation", function () {
+    it("Should create a market with valid parameters", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+      const bettingStartTime = 0n;
+      const bettingDeadline = currentTime + 86400n;
+      const minimumBet = 10_000n; // 0.01 USDC
+      const outcomes = ["Option A", "Option B", "Option C"];
+      const feePercentage = 5n;
+
+      const marketAddress = await factory.write.createMarket(
+        [
+          3n, // outcomeCount
+          bettingStartTime,
+          bettingDeadline,
+          minimumBet,
+          feePercentage,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      expect(await factory.read.totalMarketsCreated()).to.equal(1n);
+    });
+
+    it("Should emit MarketCreated event", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          2n, // outcomeCount
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const events = await factory.getEvents.MarketCreated();
+      expect(events.length).to.be.greaterThan(0);
+      expect(events[0].args.creator?.toLowerCase()).to.equal(user1.account.address.toLowerCase());
+      expect(events[0].args.outcomeCount).to.equal(2n);
+    });
+
+    it("Should track market in allMarkets array", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Market 1",
+          "First market",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      expect(allMarkets.length).to.equal(1);
+    });
+
+    it("Should track market in marketsByCreator mapping", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Market 1",
+          "First market",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const userMarkets = await factory.read.getMarketsByCreator([user1.account.address]);
+      expect(userMarkets.length).to.equal(1);
+    });
+
+    it("Should increment totalMarketsCreated", async function () {
+      const { factory, usdc, user1, user2 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Market 1",
+          "First",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      await factory.write.createMarket(
+        [
+          "Market 2",
+          "Second",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["X", "Y"],
+          10n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user2.account }
+      );
+
+      expect(await factory.read.totalMarketsCreated()).to.equal(2n);
+    });
+
+    it("Should create multiple markets from same creator", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Market 1",
+          "First",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      await factory.write.createMarket(
+        [
+          "Market 2",
+          "Second",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["X", "Y"],
+          10n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const userMarkets = await factory.read.getMarketsByCreator([user1.account.address]);
+      expect(userMarkets.length).to.equal(2);
+    });
+
+    it("Should create markets from different creators", async function () {
+      const { factory, usdc, user1, user2 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "User1 Market",
+          "First",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      await factory.write.createMarket(
+        [
+          "User2 Market",
+          "Second",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["X", "Y"],
+          10n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user2.account }
+      );
+
+      const user1Markets = await factory.read.getMarketsByCreator([user1.account.address]);
+      const user2Markets = await factory.read.getMarketsByCreator([user2.account.address]);
+
+      expect(user1Markets.length).to.equal(1);
+      expect(user2Markets.length).to.equal(1);
+      expect(user1Markets[0]).to.not.equal(user2Markets[0]);
+    });
+
+    it("Created market should have correct creator", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Test Market",
+          "Description",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      const marketAddress = allMarkets[0];
+
+      // Get the PredictionMarket contract instance
+      const market = await hre.viem.getContractAt("PredictionMarket", marketAddress);
+
+      expect((await market.read.creator()).toLowerCase()).to.equal(user1.account.address.toLowerCase());
+    });
+
+    it("Created market should be functional", async function () {
+      const { factory, usdc, user1, user2 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Functional Market",
+          "This should work",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["Win", "Lose"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      const marketAddress = allMarkets[0];
+
+      const market = await hre.viem.getContractAt("PredictionMarket", marketAddress);
+
+      // Test betting functionality
+      const betAmount = 1_000_000n; // 1 USDC
+      await usdc.write.approve([market.address, betAmount], { account: user2.account });
+      await market.write.placeBet([0n, betAmount, 1002n], { account: user2.account });
+
+      expect(await market.read.totalPool()).to.equal(betAmount);
+    });
+  });
+
+  describe("Validation", function () {
+    it("Should revert with deadline in the past", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+      const pastDeadline = currentTime - 1000n;
+
+      await expect(
+        factory.write.createMarket(
+          [
+            "Invalid Market",
+            "Bad deadline",
+            "", // category
+          "", // bannerUrl
+            0n,
+            pastDeadline,
+            10_000n, // 0.01 USDC
+            ["A", "B"],
+            5n,
+            usdc.address,
+          3621n, // creator FID
+          ],
+          { account: user1.account }
+        )
+      ).to.be.rejectedWith("Deadline must be in the future");
+    });
+
+    it("Should revert with start time after deadline", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+      const startTime = currentTime + 10000n;
+      const deadline = currentTime + 5000n;
+
+      await expect(
+        factory.write.createMarket(
+          [
+            "Invalid Market",
+            "Bad times",
+            "", // category
+          "", // bannerUrl
+            startTime,
+            deadline,
+            10_000n, // 0.01 USDC
+            ["A", "B"],
+            5n,
+            usdc.address,
+            3621n, // creator FID
+          ],
+          { account: user1.account }
+        )
+      ).to.be.rejectedWith("Start time must be before deadline");
+    });
+
+    it("Should revert with less than 2 outcomes", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await expect(
+        factory.write.createMarket(
+          [
+            "Invalid Market",
+            "Not enough outcomes",
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            10_000n, // 0.01 USDC
+            ["Only One"],
+            5n,
+            usdc.address,
+          3621n, // creator FID
+          ],
+          { account: user1.account }
+        )
+      ).to.be.rejectedWith("Must have at least 2 outcomes");
+    });
+
+    it("Should revert with creator fee above maximum", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await expect(
+        factory.write.createMarket(
+          [
+            "Invalid Market",
+            "Creator fee too high",
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            10_000n, // 0.01 USDC
+            ["A", "B"],
+            18n, // Above 17% max creator fee
+            usdc.address,
+          3621n, // creator FID
+          ],
+          { account: user1.account }
+        )
+      ).to.be.rejectedWith("Creator fee cannot exceed 17%");
+    });
+
+    it("Should revert with zero minimum bet", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await expect(
+        factory.write.createMarket(
+          [
+            "Invalid Market",
+            "Zero min bet",
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            0n, // Zero minimum
+            ["A", "B"],
+            5n,
+            usdc.address,
+          3621n, // creator FID
+          ],
+          { account: user1.account }
+        )
+      ).to.be.rejectedWith("Minimum bet must be greater than 0");
+    });
+
+    it("Should revert with empty title", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await expect(
+        factory.write.createMarket(
+          [
+            "", // Empty title
+            "Description",
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            10_000n, // 0.01 USDC
+            ["A", "B"],
+            5n,
+            usdc.address,
+            3621n, // creator FID
+          ],
+          { account: user1.account }
+        )
+      ).to.be.rejectedWith("Title cannot be empty");
+    });
+
+    it("Should accept creator fee at maximum (17%)", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Max Creator Fee Market",
+          "17% creator fee + 3% platform = 20% total",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          17n, // Exactly at max creator fee
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      expect(await factory.read.totalMarketsCreated()).to.equal(1n);
+    });
+
+    it("Should accept 0% creator fee (platform 3% still applies)", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Zero Creator Fee Market",
+          "0% creator fee + 3% platform = 3% total",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          0n, // 0% creator fee
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      expect(await factory.read.totalMarketsCreated()).to.equal(1n);
+    });
+  });
+
+  describe("View Functions", function () {
+    it("getAllMarkets should return all created markets", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      // Create 3 markets
+      for (let i = 0; i < 3; i++) {
+        await factory.write.createMarket(
+          [
+            `Market ${i + 1}`,
+            `Description ${i + 1}`,
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            10_000n, // 0.01 USDC
+            ["A", "B"],
+            5n,
+            usdc.address,
+            3621n, // creator FID
+          ],
+          { account: user1.account }
+        );
+      }
+
+      const allMarkets = await factory.read.getAllMarkets();
+      expect(allMarkets.length).to.equal(3);
+    });
+
+    it("getTotalMarkets should return correct count", async function () {
+      const { factory, usdc, user1, user2 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Market 1",
+          "First",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      await factory.write.createMarket(
+        [
+          "Market 2",
+          "Second",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["X", "Y"],
+          10n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user2.account }
+      );
+
+      const total = await factory.read.getTotalMarkets();
+      expect(total).to.equal(2n);
+    });
+
+    it("getMarketsPaginated should return correct slice", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      // Create 5 markets
+      for (let i = 0; i < 5; i++) {
+        await factory.write.createMarket(
+          [
+            `Market ${i + 1}`,
+            `Desc ${i + 1}`,
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            10_000n, // 0.01 USDC
+            ["A", "B"],
+            5n,
+            usdc.address,
+            3621n, // creator FID
+          ],
+          { account: user1.account }
+        );
+      }
+
+      // Get markets 1-3 (offset 1, limit 3)
+      const paginatedMarkets = await factory.read.getMarketsPaginated([1n, 3n]);
+      expect(paginatedMarkets.length).to.equal(3);
+
+      const allMarkets = await factory.read.getAllMarkets();
+      expect(paginatedMarkets[0]).to.equal(allMarkets[1]);
+      expect(paginatedMarkets[1]).to.equal(allMarkets[2]);
+      expect(paginatedMarkets[2]).to.equal(allMarkets[3]);
+    });
+
+    it("getLatestMarkets should return newest first", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      // Create 3 markets
+      for (let i = 0; i < 3; i++) {
+        await factory.write.createMarket(
+          [
+            `Market ${i + 1}`,
+            `Desc ${i + 1}`,
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            10_000n, // 0.01 USDC
+            ["A", "B"],
+            5n,
+            usdc.address,
+            3621n, // creator FID
+          ],
+          { account: user1.account }
+        );
+      }
+
+      const latestMarkets = await factory.read.getLatestMarkets([2n]);
+      expect(latestMarkets.length).to.equal(2);
+
+      const allMarkets = await factory.read.getAllMarkets();
+      // Latest should be last created (Market 3)
+      expect(latestMarkets[0]).to.equal(allMarkets[2]);
+      // Second latest should be Market 2
+      expect(latestMarkets[1]).to.equal(allMarkets[1]);
+    });
+
+    it("isMarketFromFactory should return true for created markets", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Test Market",
+          "Description",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      const marketAddress = allMarkets[0];
+
+      const isFromFactory = await factory.read.isMarketFromFactory([marketAddress]);
+      expect(isFromFactory).to.equal(true);
+    });
+
+    it("isMarketFromFactory should return false for random addresses", async function () {
+      const { factory, user2 } = await loadFixture(deployFactoryFixture);
+
+      const isFromFactory = await factory.read.isMarketFromFactory([user2.account.address]);
+      expect(isFromFactory).to.equal(false);
+    });
+
+    it("getMarketsInfo should return batch info", async function () {
+      const { factory, usdc, user1, user2 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Market 1",
+          "First",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      await factory.write.createMarket(
+        [
+          "Market 2",
+          "Second",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["X", "Y"],
+          10n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user2.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      const batchInfo = await factory.read.getMarketsInfo([allMarkets]);
+
+      expect(batchInfo[0].length).to.equal(2); // titles
+      expect(batchInfo[0][0]).to.equal("Market 1");
+      expect(batchInfo[0][1]).to.equal("Market 2");
+
+      expect(batchInfo[1].length).to.equal(2); // creators
+      expect(batchInfo[1][0].toLowerCase()).to.equal(user1.account.address.toLowerCase());
+      expect(batchInfo[1][1].toLowerCase()).to.equal(user2.account.address.toLowerCase());
+
+      expect(batchInfo[2].length).to.equal(2); // totalPools
+      expect(batchInfo[2][0]).to.equal(0n);
+
+      expect(batchInfo[3].length).to.equal(2); // isResolveds
+      expect(batchInfo[3][0]).to.equal(false);
+    });
+  });
+
+  describe("Integration", function () {
+    it("Should create and interact with multiple markets", async function () {
+      const { factory, usdc, user1, user2, user3 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      // User1 creates a market
+      await factory.write.createMarket(
+        [
+          "Sports Match",
+          "Team A vs Team B",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["Team A wins", "Team B wins", "Draw"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      // User2 creates a market
+      await factory.write.createMarket(
+        [
+          "Election",
+          "Who will win?",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["Candidate A", "Candidate B"],
+          10n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user2.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      expect(allMarkets.length).to.equal(2);
+
+      // User3 bets on both markets
+      const market1 = await hre.viem.getContractAt("PredictionMarket", allMarkets[0]);
+      const market2 = await hre.viem.getContractAt("PredictionMarket", allMarkets[1]);
+
+      const bet1 = 1_000_000n; // 1 USDC
+      const bet2 = 500_000n; // 0.5 USDC
+
+      await usdc.write.approve([market1.address, bet1], { account: user3.account });
+      await market1.write.placeBet([0n, bet1, 1003n], { account: user3.account });
+
+      await usdc.write.approve([market2.address, bet2], { account: user3.account });
+      await market2.write.placeBet([1n, bet2, 1003n], { account: user3.account });
+
+      expect(await market1.read.totalPool()).to.equal(bet1);
+      expect(await market2.read.totalPool()).to.equal(bet2);
+    });
+
+    it("Should track creator markets correctly across multiple creators", async function () {
+      const { factory, usdc, user1, user2 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      // User1 creates 2 markets
+      for (let i = 0; i < 2; i++) {
+        await factory.write.createMarket(
+          [
+            `User1 Market ${i + 1}`,
+            `Desc ${i + 1}`,
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            10_000n, // 0.01 USDC
+            ["A", "B"],
+            5n,
+            usdc.address,
+            3621n, // creator FID
+          ],
+          { account: user1.account }
+        );
+      }
+
+      // User2 creates 3 markets
+      for (let i = 0; i < 3; i++) {
+        await factory.write.createMarket(
+          [
+            `User2 Market ${i + 1}`,
+            `Desc ${i + 1}`,
+            "", // category
+          "", // bannerUrl
+            0n,
+            currentTime + 86400n,
+            10_000n, // 0.01 USDC
+            ["X", "Y"],
+            10n,
+            usdc.address,
+            3621n, // creator FID
+          ],
+          { account: user2.account }
+        );
+      }
+
+      const user1Markets = await factory.read.getMarketsByCreator([user1.account.address]);
+      const user2Markets = await factory.read.getMarketsByCreator([user2.account.address]);
+
+      expect(user1Markets.length).to.equal(2);
+      expect(user2Markets.length).to.equal(3);
+      expect(await factory.read.totalMarketsCreated()).to.equal(5n);
+    });
+  });
+
+  describe("Edge Cases", function () {
+    it("Should handle immediate start time (0)", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+
+      await factory.write.createMarket(
+        [
+          "Immediate Market",
+          "Start right away",
+          "", // category
+          "", // bannerUrl
+          0n, // Immediate
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      const market = await hre.viem.getContractAt("PredictionMarket", allMarkets[0]);
+
+      expect(await market.read.bettingStartTime()).to.equal(0n);
+      expect(await market.read.canBetNow()).to.equal(true);
+    });
+
+    it("Should handle scheduled start time", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+      const startTime = currentTime + 3600n; // 1 hour from now
+
+      await factory.write.createMarket(
+        [
+          "Scheduled Market",
+          "Start later",
+          "", // category
+          "", // bannerUrl
+          startTime,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      const market = await hre.viem.getContractAt("PredictionMarket", allMarkets[0]);
+
+      expect(await market.read.bettingStartTime()).to.equal(startTime);
+      expect(await market.read.canBetNow()).to.equal(false);
+    });
+
+    it("Should handle market with many outcomes", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+      const manyOutcomes = Array.from({ length: 20 }, (_, i) => `Option ${i + 1}`);
+
+      await factory.write.createMarket(
+        [
+          "Many Options",
+          "Lots of choices",
+          "", // category
+          "", // bannerUrl
+          0n,
+          currentTime + 86400n,
+          10_000n, // 0.01 USDC
+          manyOutcomes,
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      const allMarkets = await factory.read.getAllMarkets();
+      const market = await hre.viem.getContractAt("PredictionMarket", allMarkets[0]);
+
+      const outcomes = await market.read.getOutcomes();
+      expect(outcomes.length).to.equal(20);
+    });
+
+    it("Should handle very long deadline", async function () {
+      const { factory, usdc, user1 } = await loadFixture(deployFactoryFixture);
+
+      const currentTime = BigInt(await time.latest());
+      const farFutureDeadline = currentTime + 31536000n; // 1 year from now
+
+      await factory.write.createMarket(
+        [
+          "Long Term Market",
+          "Year-long prediction",
+          "", // category
+          "", // bannerUrl
+          0n,
+          farFutureDeadline,
+          10_000n, // 0.01 USDC
+          ["A", "B"],
+          5n,
+          usdc.address,
+          3621n, // creator FID
+        ],
+        { account: user1.account }
+      );
+
+      expect(await factory.read.totalMarketsCreated()).to.equal(1n);
+    });
+  });
+});

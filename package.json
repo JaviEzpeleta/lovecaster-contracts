@@ -1,0 +1,38 @@
+{
+  "name": "sitio-citas-contracts",
+  "version": "1.0.0",
+  "description": "Smart contracts for Sitio Citas - virtual dating game with AI clones on Farcaster",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "coverage": "SOLIDITY_COVERAGE=true hardhat coverage",
+    "deploy:sitio:sepolia": "hardhat run scripts/deploy-sitio.ts --network base-sepolia",
+    "deploy:sitio:mainnet": "hardhat run scripts/deploy-sitio.ts --network base-mainnet",
+    "playground:sitio": "hardhat run scripts/playground-sitio.ts --network base-sepolia"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JaviEzpeleta/sitio-citas-contracts.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/JaviEzpeleta/sitio-citas-contracts/issues"
+  },
+  "homepage": "https://github.com/JaviEzpeleta/sitio-citas-contracts#readme",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ignition-viem": "^0.15.15",
+    "@nomicfoundation/hardhat-toolbox-viem": "^3.0.0",
+    "@types/node": "^22.18.13",
+    "forge-std": "github:foundry-rs/forge-std#v1.9.4",
+    "hardhat": "^2.26.5",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.8.0",
+    "viem": "^2.38.5"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.4.0",
+    "dotenv": "^17.2.3"
+  }
+}
