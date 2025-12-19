@@ -22,37 +22,70 @@ Para que alguien pueda ser "clonable" en el juego:
 ## 💰 Sistema de Monetización
 
 ### Para los Creadores de Perfil:
-- 💵 Pueden cobrar una pequeña cantidad (ej: **$1 USD**) cada vez que alguien quiera tener una cita con su clon
-- 🎁 Se llevan parte del pago por "prestar" su personalidad digital
+- 💵 Pueden establecer un precio mínimo en **ETH** por cada cita con su clon
+- 🎁 Reciben la mayor parte del pago (después del fee de plataforma)
 
 ### Para la Plataforma:
-- 📊 La plataforma cobra un **fee** por cada transacción
+- 📊 Cobra un fee configurable (máximo 20%) por cada transacción
 - 🏦 Modelo sostenible para mantener el servicio
 
-## 📜 Funciones del Smart Contract
+## 📜 Smart Contract: SitioDates
 
-### 1. 📝 `registerFID(uint256 fid, uint256 price)`
-- **Propósito**: Registrar un nuevo FID que acepta participar en el juego
-- **Quién puede llamarla**: Solo el deployer/backend (gasless para usuarios)
+### 🔐 Funciones del Owner (Gasless para usuarios)
+
+#### `registerPlayer(uint256 fid, address wallet, uint256 minPrice)`
+- **Propósito**: Registrar un nuevo jugador que acepta participar
 - **Parámetros**:
-  - `fid`: El Farcaster ID del usuario
-  - `price`: Precio mínimo para jugar con este perfil
+  - `fid`: Farcaster ID del usuario
+  - `wallet`: Dirección para recibir pagos
+  - `minPrice`: Precio mínimo en wei para una cita
 
-### 2. 💸 `payToPlay(uint256 fid)`
+#### `updatePlayer(uint256 fid, address wallet, uint256 minPrice, bool active)`
+- **Propósito**: Actualizar configuración de un jugador
+- **Cooldowns**:
+  - 🕐 Cambio de precio: 1 hora de espera
+  - 🕐 Cambio de wallet: 24 horas de espera
+  - ✅ Activar/desactivar: sin cooldown
+
+#### `deregisterPlayer(uint256 fid)`
+- **Propósito**: Eliminar completamente a un jugador del registro
+
+#### `activatePlayer(uint256 fid)` / `deactivatePlayer(uint256 fid)`
+- **Propósito**: Atajos rápidos para activar/desactivar jugadores
+
+#### `setPlatformWallet(address newWallet)`
+- **Propósito**: Cambiar la wallet que recibe los fees de plataforma
+
+#### `setPlatformFee(uint256 newFee)`
+- **Propósito**: Ajustar el fee de plataforma (0-2000 basis points, donde 100 = 1%)
+
+#### `pause()` / `unpause()`
+- **Propósito**: Pausar/reanudar el contrato en caso de emergencia
+
+### 💸 Funciones Públicas
+
+#### `payForDate(uint256 fid)` (payable)
 - **Propósito**: Pagar para tener una cita con un perfil específico
 - **Funcionamiento**:
-  - Verifica que el FID esté registrado en el contrato ✅
-  - Verifica que el pago sea >= al precio mínimo establecido ✅
-  - Distribuye el pago entre creador y plataforma 💰
-  - Emite evento confirmando la transacción 📢
+  - ✅ Verifica que el jugador esté registrado y activo
+  - ✅ Verifica que el pago sea >= al precio mínimo
+  - 💰 Distribuye el pago entre jugador y plataforma
+  - 📢 Emite evento `DatePaid`
 
-### 3. 🔍 `isRegistered(uint256 fid)` (view)
-- **Propósito**: Consultar si un FID está registrado
-- **Returns**: `bool`
+### 🔍 Funciones de Consulta (View)
 
-### 4. 💲 `getPrice(uint256 fid)` (view)
-- **Propósito**: Consultar el precio para jugar con un FID
-- **Returns**: `uint256`
+| Función | Descripción |
+|---------|-------------|
+| `getPlayer(fid)` | Obtiene toda la info de un jugador |
+| `isPlayerActive(fid)` | ¿Está registrado Y activo? |
+| `isPlayerRegistered(fid)` | ¿Está registrado? |
+| `getMinPrice(fid)` | Precio mínimo en wei |
+| `getPriceCooldownRemaining(fid)` | Segundos hasta poder cambiar precio |
+| `getWalletCooldownRemaining(fid)` | Segundos hasta poder cambiar wallet |
+| `getRegisteredFids(offset, limit)` | Lista paginada de FIDs |
+| `getTotalPlayersCount()` | Total de jugadores registrados |
+| `getStats()` | Estadísticas del contrato |
+| `calculatePaymentSplit(amount)` | Calcula distribución de un pago |
 
 ## 🏗️ Arquitectura
 
@@ -65,21 +98,29 @@ Para que alguien pueda ser "clonable" en el juego:
         │                        │                       │
         ▼                        ▼                       ▼
    👤 Usuario              ✍️ Registra FIDs        💾 Almacena
-   inicia cita             (solo owner)            consentimientos
+   paga con ETH            (solo owner)            consentimientos
                                                    y pagos
 ```
+
+## 🛡️ Seguridad
+
+- 🔒 **ReentrancyGuard**: Protección contra ataques de reentrancia
+- ⏸️ **Pausable**: El owner puede pausar en emergencias
+- ⏰ **Cooldowns**: Evita cambios frecuentes de precio/wallet
+- 📊 **Basis Points**: Precisión en cálculos de fees (10000 = 100%)
 
 ## 🛠️ Stack Tecnológico
 
 - ⛓️ **Blockchain**: Base (L2 de Ethereum)
-- 📝 **Lenguaje**: Solidity
+- 📝 **Lenguaje**: Solidity ^0.8.28
 - 🔧 **Framework**: Hardhat
+- 📦 **Librerías**: OpenZeppelin Contracts
 - 🌐 **Red Social**: Farcaster
 
-## 🚀 Próximos Pasos
+## 🚀 Estado del Proyecto
 
-- [ ] 📄 Escribir el smart contract
-- [ ] 🧪 Escribir tests
+- [x] 📄 Smart contract escrito
+- [x] 🧪 Tests escritos
 - [ ] 🚀 Deploy en Base Sepolia (testnet)
 - [ ] ✅ Verificar contrato
 - [ ] 🎉 Deploy en Base mainnet
