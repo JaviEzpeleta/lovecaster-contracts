@@ -103,7 +103,7 @@ describe("SitioDates", function () {
       expect(player[1].toLowerCase()).to.equal(player1.account.address.toLowerCase()); // wallet
       expect(player[2]).to.equal(parseEther("0.01")); // minPrice
       expect(player[3]).to.equal(true); // active
-      expect(player[5]).to.equal(true); // exists
+      expect(player[6]).to.equal(true); // exists (index shifted due to two timestamp fields)
     });
 
     it("Should emit PlayerRegistered event", async function () {
@@ -205,21 +205,34 @@ describe("SitioDates", function () {
   });
 
   describe("Player Updates", function () {
-    it("Should allow owner to update player after cooldown", async function () {
-      const { sitioDates, owner, player1, player2 } = await loadFixture(deployWithPlayersFixture);
+    it("Should allow owner to update player price after 1h cooldown", async function () {
+      const { sitioDates, owner, player1 } = await loadFixture(deployWithPlayersFixture);
 
-      // Increase time by 1 hour
+      // Increase time by 1 hour for price update
       await time.increase(3600);
 
       await sitioDates.write.updatePlayer(
-        [1001n, player2.account.address, parseEther("0.02"), false],
+        [1001n, player1.account.address, parseEther("0.02"), true],
+        { account: owner.account }
+      );
+
+      const player = await sitioDates.read.getPlayer([1001n]);
+      expect(player[2]).to.equal(parseEther("0.02"));
+    });
+
+    it("Should allow owner to update player wallet after 24h cooldown", async function () {
+      const { sitioDates, owner, player1, player2 } = await loadFixture(deployWithPlayersFixture);
+
+      // Increase time by 24 hours for wallet update
+      await time.increase(86400);
+
+      await sitioDates.write.updatePlayer(
+        [1001n, player2.account.address, parseEther("0.01"), true],
         { account: owner.account }
       );
 
       const player = await sitioDates.read.getPlayer([1001n]);
       expect(player[1].toLowerCase()).to.equal(player2.account.address.toLowerCase());
-      expect(player[2]).to.equal(parseEther("0.02"));
-      expect(player[3]).to.equal(false);
     });
 
     it("Should emit PlayerUpdated event", async function () {
@@ -240,7 +253,7 @@ describe("SitioDates", function () {
       expect(logs[0].args.minPrice).to.equal(parseEther("0.02"));
     });
 
-    it("Should revert if cooldown not elapsed", async function () {
+    it("Should revert if price cooldown not elapsed", async function () {
       const { sitioDates, owner, player1 } = await loadFixture(deployWithPlayersFixture);
 
       await expect(
@@ -248,7 +261,21 @@ describe("SitioDates", function () {
           [1001n, player1.account.address, parseEther("0.02"), true],
           { account: owner.account }
         )
-      ).to.be.rejectedWith("Update cooldown not elapsed");
+      ).to.be.rejectedWith("Price update cooldown not elapsed");
+    });
+
+    it("Should revert if wallet cooldown not elapsed", async function () {
+      const { sitioDates, owner, player1, player2 } = await loadFixture(deployWithPlayersFixture);
+
+      // Wait 1 hour (enough for price, not for wallet)
+      await time.increase(3600);
+
+      await expect(
+        sitioDates.write.updatePlayer(
+          [1001n, player2.account.address, parseEther("0.01"), true],
+          { account: owner.account }
+        )
+      ).to.be.rejectedWith("Wallet update cooldown not elapsed");
     });
 
     it("Should revert if player not registered", async function () {
@@ -262,40 +289,52 @@ describe("SitioDates", function () {
       ).to.be.rejectedWith("Player not registered");
     });
 
-    it("Should deactivate player", async function () {
+    it("Should deactivate player without cooldown", async function () {
       const { sitioDates, owner } = await loadFixture(deployWithPlayersFixture);
 
-      await time.increase(3600);
-
+      // No cooldown needed for activation/deactivation
       await sitioDates.write.deactivatePlayer([1001n], { account: owner.account });
 
       const player = await sitioDates.read.getPlayer([1001n]);
       expect(player[3]).to.equal(false);
     });
 
-    it("Should activate player", async function () {
+    it("Should activate player without cooldown", async function () {
       const { sitioDates, owner } = await loadFixture(deployWithPlayersFixture);
 
-      await time.increase(3600);
+      // Deactivate first (no cooldown)
       await sitioDates.write.deactivatePlayer([1001n], { account: owner.account });
 
-      await time.increase(3600);
+      // Activate immediately (no cooldown)
       await sitioDates.write.activatePlayer([1001n], { account: owner.account });
 
       const player = await sitioDates.read.getPlayer([1001n]);
       expect(player[3]).to.equal(true);
     });
 
-    it("Should report correct cooldown remaining", async function () {
+    it("Should report correct price cooldown remaining", async function () {
       const { sitioDates } = await loadFixture(deployWithPlayersFixture);
 
-      const cooldown = await sitioDates.read.getUpdateCooldownRemaining([1001n]);
+      const cooldown = await sitioDates.read.getPriceCooldownRemaining([1001n]);
       expect(cooldown > 0n).to.be.true;
-      expect(cooldown <= 3600n).to.be.true;
+      expect(cooldown <= 3600n).to.be.true; // 1 hour
 
       await time.increase(3600);
 
-      const cooldownAfter = await sitioDates.read.getUpdateCooldownRemaining([1001n]);
+      const cooldownAfter = await sitioDates.read.getPriceCooldownRemaining([1001n]);
+      expect(cooldownAfter).to.equal(0n);
+    });
+
+    it("Should report correct wallet cooldown remaining", async function () {
+      const { sitioDates } = await loadFixture(deployWithPlayersFixture);
+
+      const cooldown = await sitioDates.read.getWalletCooldownRemaining([1001n]);
+      expect(cooldown > 0n).to.be.true;
+      expect(cooldown <= 86400n).to.be.true; // 24 hours
+
+      await time.increase(86400);
+
+      const cooldownAfter = await sitioDates.read.getWalletCooldownRemaining([1001n]);
       expect(cooldownAfter).to.equal(0n);
     });
   });
@@ -337,7 +376,7 @@ describe("SitioDates", function () {
       await sitioDates.write.deregisterPlayer([1001n], { account: owner.account });
 
       const player = await sitioDates.read.getPlayer([1001n]);
-      expect(player[5]).to.equal(false); // exists should be false
+      expect(player[6]).to.equal(false); // exists should be false (index shifted)
     });
 
     it("Should revert if player not registered", async function () {
@@ -547,7 +586,7 @@ describe("SitioDates", function () {
     it("Should revert if player not active", async function () {
       const { sitioDates, owner, user1 } = await loadFixture(deployWithPlayersFixture);
 
-      await time.increase(3600);
+      // No cooldown needed for deactivation
       await sitioDates.write.deactivatePlayer([1001n], { account: owner.account });
 
       await expect(
@@ -694,7 +733,7 @@ describe("SitioDates", function () {
       expect(await sitioDates.read.isPlayerActive([1001n])).to.equal(true);
       expect(await sitioDates.read.isPlayerActive([9999n])).to.equal(false);
 
-      await time.increase(3600);
+      // No cooldown needed for deactivation
       await sitioDates.write.deactivatePlayer([1001n], { account: owner.account });
 
       expect(await sitioDates.read.isPlayerActive([1001n])).to.equal(false);

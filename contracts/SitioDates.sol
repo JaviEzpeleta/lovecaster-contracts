@@ -24,7 +24,8 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
         address payable wallet; // Wallet to receive payments
         uint256 minPrice;       // Minimum ETH required for a date
         bool active;            // Whether player can receive dates
-        uint256 lastUpdated;    // Last update timestamp (for cooldown)
+        uint256 lastPriceUpdated;  // Last price update timestamp (for cooldown)
+        uint256 lastWalletUpdated; // Last wallet update timestamp (for cooldown)
         bool exists;            // Whether player is registered
     }
 
@@ -38,7 +39,9 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
     address payable public platformWallet;
     uint256 public platformFeePercentage;       // In basis points (e.g., 500 = 5%)
 
-    uint256 public constant UPDATE_COOLDOWN = 1 hours;
+    uint256 public constant PRICE_UPDATE_COOLDOWN = 1 hours;
+    uint256 public constant WALLET_UPDATE_COOLDOWN = 24 hours;
+    // No cooldown for activation/deactivation
     uint256 public constant BASIS_POINTS = 10000;  // 100% = 10000 basis points
     uint256 public constant MAX_PLATFORM_FEE = 2000; // Max 20% = 2000 basis points
 
@@ -129,7 +132,8 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
             wallet: _wallet,
             minPrice: _minPrice,
             active: true,
-            lastUpdated: block.timestamp,
+            lastPriceUpdated: block.timestamp,
+            lastWalletUpdated: block.timestamp,
             exists: true
         });
 
@@ -160,6 +164,7 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
      * @param _wallet New wallet address
      * @param _minPrice New minimum price
      * @param _active Whether player is active
+     * @dev Wallet changes have 24h cooldown, price changes have 1h cooldown, activation has no cooldown
      */
     function updatePlayer(
         uint256 _fid,
@@ -169,16 +174,31 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
     ) external onlyOwner {
         require(players[_fid].exists, "Player not registered");
         require(_wallet != address(0), "Invalid wallet");
-        require(
-            block.timestamp >= players[_fid].lastUpdated + UPDATE_COOLDOWN,
-            "Update cooldown not elapsed"
-        );
 
         Player storage player = players[_fid];
-        player.wallet = _wallet;
-        player.minPrice = _minPrice;
+
+        // Check wallet cooldown only if wallet is changing
+        if (_wallet != player.wallet) {
+            require(
+                block.timestamp >= player.lastWalletUpdated + WALLET_UPDATE_COOLDOWN,
+                "Wallet update cooldown not elapsed"
+            );
+            player.wallet = _wallet;
+            player.lastWalletUpdated = block.timestamp;
+        }
+
+        // Check price cooldown only if price is changing
+        if (_minPrice != player.minPrice) {
+            require(
+                block.timestamp >= player.lastPriceUpdated + PRICE_UPDATE_COOLDOWN,
+                "Price update cooldown not elapsed"
+            );
+            player.minPrice = _minPrice;
+            player.lastPriceUpdated = block.timestamp;
+        }
+
+        // No cooldown for activation/deactivation
         player.active = _active;
-        player.lastUpdated = block.timestamp;
 
         emit PlayerUpdated(_fid, _wallet, _minPrice, _active, block.timestamp);
     }
@@ -186,18 +206,14 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
     /**
      * @notice Deactivate a player (shortcut for updatePlayer with active=false)
      * @param _fid Farcaster ID of the player
+     * @dev No cooldown for deactivation to allow emergency responses
      */
     function deactivatePlayer(uint256 _fid) external onlyOwner {
         require(players[_fid].exists, "Player not registered");
         require(players[_fid].active, "Player already inactive");
-        require(
-            block.timestamp >= players[_fid].lastUpdated + UPDATE_COOLDOWN,
-            "Update cooldown not elapsed"
-        );
 
         Player storage player = players[_fid];
         player.active = false;
-        player.lastUpdated = block.timestamp;
 
         emit PlayerUpdated(
             _fid,
@@ -211,18 +227,14 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
     /**
      * @notice Activate a player (shortcut for updatePlayer with active=true)
      * @param _fid Farcaster ID of the player
+     * @dev No cooldown for activation
      */
     function activatePlayer(uint256 _fid) external onlyOwner {
         require(players[_fid].exists, "Player not registered");
         require(!players[_fid].active, "Player already active");
-        require(
-            block.timestamp >= players[_fid].lastUpdated + UPDATE_COOLDOWN,
-            "Update cooldown not elapsed"
-        );
 
         Player storage player = players[_fid];
         player.active = true;
-        player.lastUpdated = block.timestamp;
 
         emit PlayerUpdated(
             _fid,
@@ -327,7 +339,8 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
      * @return wallet The payment wallet
      * @return minPrice Minimum price for a date
      * @return active Whether player is active
-     * @return lastUpdated Last update timestamp
+     * @return lastPriceUpdated Last price update timestamp
+     * @return lastWalletUpdated Last wallet update timestamp
      * @return exists Whether player is registered
      */
     function getPlayer(uint256 _fid) external view returns (
@@ -335,7 +348,8 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
         address wallet,
         uint256 minPrice,
         bool active,
-        uint256 lastUpdated,
+        uint256 lastPriceUpdated,
+        uint256 lastWalletUpdated,
         bool exists
     ) {
         Player storage player = players[_fid];
@@ -344,7 +358,8 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
             player.wallet,
             player.minPrice,
             player.active,
-            player.lastUpdated,
+            player.lastPriceUpdated,
+            player.lastWalletUpdated,
             player.exists
         );
     }
@@ -378,14 +393,29 @@ contract SitioDates is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Get time remaining until player can be updated
+     * @notice Get time remaining until player's price can be updated
      * @param _fid Farcaster ID
-     * @return Seconds until update is allowed (0 if already allowed)
+     * @return Seconds until price update is allowed (0 if already allowed)
      */
-    function getUpdateCooldownRemaining(uint256 _fid) external view returns (uint256) {
+    function getPriceCooldownRemaining(uint256 _fid) external view returns (uint256) {
         require(players[_fid].exists, "Player not registered");
 
-        uint256 cooldownEnd = players[_fid].lastUpdated + UPDATE_COOLDOWN;
+        uint256 cooldownEnd = players[_fid].lastPriceUpdated + PRICE_UPDATE_COOLDOWN;
+        if (block.timestamp >= cooldownEnd) {
+            return 0;
+        }
+        return cooldownEnd - block.timestamp;
+    }
+
+    /**
+     * @notice Get time remaining until player's wallet can be updated
+     * @param _fid Farcaster ID
+     * @return Seconds until wallet update is allowed (0 if already allowed)
+     */
+    function getWalletCooldownRemaining(uint256 _fid) external view returns (uint256) {
+        require(players[_fid].exists, "Player not registered");
+
+        uint256 cooldownEnd = players[_fid].lastWalletUpdated + WALLET_UPDATE_COOLDOWN;
         if (block.timestamp >= cooldownEnd) {
             return 0;
         }
