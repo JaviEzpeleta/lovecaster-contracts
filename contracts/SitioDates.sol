@@ -164,6 +164,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
      */
     function deactivatePlayer(uint256 _fid) external onlyOwner {
         require(players[_fid].exists, "Player not registered");
+        require(players[_fid].active, "Player already inactive");
         require(
             block.timestamp >= players[_fid].lastUpdated + UPDATE_COOLDOWN,
             "Update cooldown not elapsed"
@@ -188,6 +189,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
      */
     function activatePlayer(uint256 _fid) external onlyOwner {
         require(players[_fid].exists, "Player not registered");
+        require(!players[_fid].active, "Player already active");
         require(
             block.timestamp >= players[_fid].lastUpdated + UPDATE_COOLDOWN,
             "Update cooldown not elapsed"
