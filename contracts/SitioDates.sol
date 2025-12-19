@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /**
  * @title SitioDates
@@ -11,6 +12,8 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  * @dev Players register via owner (gasless), users pay in native ETH
  */
 contract SitioDates is Ownable, ReentrancyGuard {
+    using EnumerableSet for EnumerableSet.UintSet;
+
     // ============================================
     // STRUCTS
     // ============================================
@@ -29,7 +32,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
     // ============================================
 
     mapping(uint256 => Player) public players;  // fid => Player
-    uint256[] public registeredFids;            // Array of all registered FIDs
+    EnumerableSet.UintSet private _registeredFids;  // Set of all registered FIDs (O(1) add/remove)
 
     address payable public platformWallet;
     uint256 public platformFeePercentage;       // In basis points (e.g., 500 = 5%)
@@ -81,6 +84,11 @@ contract SitioDates is Ownable, ReentrancyGuard {
         uint256 timestamp
     );
 
+    event PlayerDeregistered(
+        uint256 indexed fid,
+        uint256 timestamp
+    );
+
     // ============================================
     // CONSTRUCTOR
     // ============================================
@@ -124,9 +132,25 @@ contract SitioDates is Ownable, ReentrancyGuard {
             exists: true
         });
 
-        registeredFids.push(_fid);
+        _registeredFids.add(_fid);
 
         emit PlayerRegistered(_fid, _wallet, _minPrice, block.timestamp);
+    }
+
+    /**
+     * @notice Deregister a player completely (removes from set)
+     * @param _fid Farcaster ID of the player to deregister
+     */
+    function deregisterPlayer(uint256 _fid) external onlyOwner {
+        require(players[_fid].exists, "Player not registered");
+
+        // Remove from set (O(1) operation)
+        _registeredFids.remove(_fid);
+
+        // Clear player data
+        delete players[_fid];
+
+        emit PlayerDeregistered(_fid, block.timestamp);
     }
 
     /**
@@ -352,11 +376,54 @@ contract SitioDates is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get all registered FIDs
-     * @return Array of all registered Farcaster IDs
+     * @notice Get registered FIDs with pagination
+     * @param _offset Starting index
+     * @param _limit Maximum number of FIDs to return
+     * @return fids Array of registered Farcaster IDs
+     * @return total Total number of registered players
      */
-    function getAllRegisteredFids() external view returns (uint256[] memory) {
-        return registeredFids;
+    function getRegisteredFids(uint256 _offset, uint256 _limit) external view returns (
+        uint256[] memory fids,
+        uint256 total
+    ) {
+        total = _registeredFids.length();
+        
+        if (_offset >= total || _limit == 0) {
+            return (new uint256[](0), total);
+        }
+
+        uint256 end = _offset + _limit;
+        if (end > total) {
+            end = total;
+        }
+
+        uint256 resultLength = end - _offset;
+        fids = new uint256[](resultLength);
+
+        for (uint256 i = 0; i < resultLength; i++) {
+            fids[i] = _registeredFids.at(_offset + i);
+        }
+
+        return (fids, total);
+    }
+
+    /**
+     * @notice Get a single registered FID by index
+     * @param _index Index in the set
+     * @return The FID at the given index
+     */
+    function getRegisteredFidAt(uint256 _index) external view returns (uint256) {
+        require(_index < _registeredFids.length(), "Index out of bounds");
+        return _registeredFids.at(_index);
+    }
+
+    /**
+     * @notice Check if an FID is in the registered set
+     * @param _fid Farcaster ID to check
+     * @return True if FID is registered
+     */
+    function isFidInSet(uint256 _fid) external view returns (bool) {
+        return _registeredFids.contains(_fid);
     }
 
     /**
@@ -364,7 +431,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
      * @return Count of registered players
      */
     function getTotalPlayersCount() external view returns (uint256) {
-        return registeredFids.length;
+        return _registeredFids.length();
     }
 
     /**
@@ -383,7 +450,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
         return (
             totalDatesCount,
             totalVolumeETH,
-            registeredFids.length,
+            _registeredFids.length(),
             platformFeePercentage
         );
     }
