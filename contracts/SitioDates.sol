@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /**
@@ -11,7 +12,7 @@ import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
  *         virtual dates with AI clones of registered players
  * @dev Players register via owner (gasless), users pay in native ETH
  */
-contract SitioDates is Ownable, ReentrancyGuard {
+contract SitioDates is Ownable, ReentrancyGuard, Pausable {
     using EnumerableSet for EnumerableSet.UintSet;
 
     // ============================================
@@ -258,6 +259,22 @@ contract SitioDates is Ownable, ReentrancyGuard {
         emit PlatformFeeUpdated(oldFee, _newFee, block.timestamp);
     }
 
+    /**
+     * @notice Pause the contract in case of emergency
+     * @dev Only callable by owner, prevents payForDate from being called
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause the contract after emergency is resolved
+     * @dev Only callable by owner
+     */
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
     // ============================================
     // PUBLIC FUNCTIONS
     // ============================================
@@ -266,7 +283,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
      * @notice Pay to have a date with a player
      * @param _fid Farcaster ID of the player to date
      */
-    function payForDate(uint256 _fid) external payable nonReentrant {
+    function payForDate(uint256 _fid) external payable nonReentrant whenNotPaused {
         Player storage player = players[_fid];
 
         require(player.exists, "Player not registered");
