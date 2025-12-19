@@ -9,7 +9,7 @@ describe("SitioDates", function () {
     const [owner, player1, player2, player3, user1, user2] = await hre.viem.getWalletClients();
     const publicClient = await hre.viem.getPublicClient();
 
-    const platformFeePercentage = 5n; // 5%
+    const platformFeePercentage = 500n; // 5% in basis points (500/10000)
 
     const sitioDates = await hre.viem.deployContract("SitioDates", [
       owner.account.address, // platformWallet
@@ -84,7 +84,7 @@ describe("SitioDates", function () {
       const [owner] = await hre.viem.getWalletClients();
 
       await expect(
-        hre.viem.deployContract("SitioDates", [owner.account.address, 25n])
+        hre.viem.deployContract("SitioDates", [owner.account.address, 2500n]) // 25% in basis points, exceeds 20% max
       ).to.be.rejectedWith("Fee too high");
     });
   });
@@ -103,7 +103,7 @@ describe("SitioDates", function () {
       expect(player[1].toLowerCase()).to.equal(player1.account.address.toLowerCase()); // wallet
       expect(player[2]).to.equal(parseEther("0.01")); // minPrice
       expect(player[3]).to.equal(true); // active
-      expect(player[5]).to.equal(true); // exists
+      expect(player[6]).to.equal(true); // exists (index shifted due to two timestamp fields)
     });
 
     it("Should emit PlayerRegistered event", async function () {
@@ -184,8 +184,9 @@ describe("SitioDates", function () {
         { account: owner.account }
       );
 
-      const fids = await sitioDates.read.getAllRegisteredFids();
+      const [fids, total] = await sitioDates.read.getRegisteredFids([0n, 100n]);
       expect(fids.length).to.equal(2);
+      expect(total).to.equal(2n);
       expect(fids[0]).to.equal(1001n);
       expect(fids[1]).to.equal(1002n);
     });
@@ -204,21 +205,34 @@ describe("SitioDates", function () {
   });
 
   describe("Player Updates", function () {
-    it("Should allow owner to update player after cooldown", async function () {
-      const { sitioDates, owner, player1, player2 } = await loadFixture(deployWithPlayersFixture);
+    it("Should allow owner to update player price after 1h cooldown", async function () {
+      const { sitioDates, owner, player1 } = await loadFixture(deployWithPlayersFixture);
 
-      // Increase time by 1 hour
+      // Increase time by 1 hour for price update
       await time.increase(3600);
 
       await sitioDates.write.updatePlayer(
-        [1001n, player2.account.address, parseEther("0.02"), false],
+        [1001n, player1.account.address, parseEther("0.02"), true],
+        { account: owner.account }
+      );
+
+      const player = await sitioDates.read.getPlayer([1001n]);
+      expect(player[2]).to.equal(parseEther("0.02"));
+    });
+
+    it("Should allow owner to update player wallet after 24h cooldown", async function () {
+      const { sitioDates, owner, player1, player2 } = await loadFixture(deployWithPlayersFixture);
+
+      // Increase time by 24 hours for wallet update
+      await time.increase(86400);
+
+      await sitioDates.write.updatePlayer(
+        [1001n, player2.account.address, parseEther("0.01"), true],
         { account: owner.account }
       );
 
       const player = await sitioDates.read.getPlayer([1001n]);
       expect(player[1].toLowerCase()).to.equal(player2.account.address.toLowerCase());
-      expect(player[2]).to.equal(parseEther("0.02"));
-      expect(player[3]).to.equal(false);
     });
 
     it("Should emit PlayerUpdated event", async function () {
@@ -239,7 +253,7 @@ describe("SitioDates", function () {
       expect(logs[0].args.minPrice).to.equal(parseEther("0.02"));
     });
 
-    it("Should revert if cooldown not elapsed", async function () {
+    it("Should revert if price cooldown not elapsed", async function () {
       const { sitioDates, owner, player1 } = await loadFixture(deployWithPlayersFixture);
 
       await expect(
@@ -247,7 +261,21 @@ describe("SitioDates", function () {
           [1001n, player1.account.address, parseEther("0.02"), true],
           { account: owner.account }
         )
-      ).to.be.rejectedWith("Update cooldown not elapsed");
+      ).to.be.rejectedWith("Price update cooldown not elapsed");
+    });
+
+    it("Should revert if wallet cooldown not elapsed", async function () {
+      const { sitioDates, owner, player1, player2 } = await loadFixture(deployWithPlayersFixture);
+
+      // Wait 1 hour (enough for price, not for wallet)
+      await time.increase(3600);
+
+      await expect(
+        sitioDates.write.updatePlayer(
+          [1001n, player2.account.address, parseEther("0.01"), true],
+          { account: owner.account }
+        )
+      ).to.be.rejectedWith("Wallet update cooldown not elapsed");
     });
 
     it("Should revert if player not registered", async function () {
@@ -261,41 +289,207 @@ describe("SitioDates", function () {
       ).to.be.rejectedWith("Player not registered");
     });
 
-    it("Should deactivate player", async function () {
+    it("Should deactivate player without cooldown", async function () {
       const { sitioDates, owner } = await loadFixture(deployWithPlayersFixture);
 
-      await time.increase(3600);
-
+      // No cooldown needed for activation/deactivation
       await sitioDates.write.deactivatePlayer([1001n], { account: owner.account });
 
       const player = await sitioDates.read.getPlayer([1001n]);
       expect(player[3]).to.equal(false);
     });
 
-    it("Should activate player", async function () {
+    it("Should activate player without cooldown", async function () {
       const { sitioDates, owner } = await loadFixture(deployWithPlayersFixture);
 
-      await time.increase(3600);
+      // Deactivate first (no cooldown)
       await sitioDates.write.deactivatePlayer([1001n], { account: owner.account });
 
-      await time.increase(3600);
+      // Activate immediately (no cooldown)
       await sitioDates.write.activatePlayer([1001n], { account: owner.account });
 
       const player = await sitioDates.read.getPlayer([1001n]);
       expect(player[3]).to.equal(true);
     });
 
-    it("Should report correct cooldown remaining", async function () {
+    it("Should report correct price cooldown remaining", async function () {
       const { sitioDates } = await loadFixture(deployWithPlayersFixture);
 
-      const cooldown = await sitioDates.read.getUpdateCooldownRemaining([1001n]);
+      const cooldown = await sitioDates.read.getPriceCooldownRemaining([1001n]);
       expect(cooldown > 0n).to.be.true;
-      expect(cooldown <= 3600n).to.be.true;
+      expect(cooldown <= 3600n).to.be.true; // 1 hour
 
       await time.increase(3600);
 
-      const cooldownAfter = await sitioDates.read.getUpdateCooldownRemaining([1001n]);
+      const cooldownAfter = await sitioDates.read.getPriceCooldownRemaining([1001n]);
       expect(cooldownAfter).to.equal(0n);
+    });
+
+    it("Should report correct wallet cooldown remaining", async function () {
+      const { sitioDates } = await loadFixture(deployWithPlayersFixture);
+
+      const cooldown = await sitioDates.read.getWalletCooldownRemaining([1001n]);
+      expect(cooldown > 0n).to.be.true;
+      expect(cooldown <= 86400n).to.be.true; // 24 hours
+
+      await time.increase(86400);
+
+      const cooldownAfter = await sitioDates.read.getWalletCooldownRemaining([1001n]);
+      expect(cooldownAfter).to.equal(0n);
+    });
+  });
+
+  describe("Player Deregistration", function () {
+    it("Should allow owner to deregister a player", async function () {
+      const { sitioDates, owner } = await loadFixture(deployWithPlayersFixture);
+
+      await sitioDates.write.deregisterPlayer([1001n], { account: owner.account });
+
+      expect(await sitioDates.read.isPlayerRegistered([1001n])).to.equal(false);
+      expect(await sitioDates.read.getTotalPlayersCount()).to.equal(1n);
+    });
+
+    it("Should emit PlayerDeregistered event", async function () {
+      const { sitioDates, owner, publicClient } = await loadFixture(deployWithPlayersFixture);
+
+      const hash = await sitioDates.write.deregisterPlayer([1001n], { account: owner.account });
+
+      await publicClient.waitForTransactionReceipt({ hash });
+      const logs = await sitioDates.getEvents.PlayerDeregistered();
+
+      expect(logs.length).to.be.greaterThan(0);
+      expect(logs[0].args.fid).to.equal(1001n);
+    });
+
+    it("Should remove player from FID set", async function () {
+      const { sitioDates, owner } = await loadFixture(deployWithPlayersFixture);
+
+      await sitioDates.write.deregisterPlayer([1001n], { account: owner.account });
+
+      expect(await sitioDates.read.isFidInSet([1001n])).to.equal(false);
+      expect(await sitioDates.read.isFidInSet([1002n])).to.equal(true);
+    });
+
+    it("Should clear player data on deregistration", async function () {
+      const { sitioDates, owner } = await loadFixture(deployWithPlayersFixture);
+
+      await sitioDates.write.deregisterPlayer([1001n], { account: owner.account });
+
+      const player = await sitioDates.read.getPlayer([1001n]);
+      expect(player[6]).to.equal(false); // exists should be false (index shifted)
+    });
+
+    it("Should revert if player not registered", async function () {
+      const { sitioDates, owner } = await loadFixture(deploySitioDatesFixture);
+
+      await expect(
+        sitioDates.write.deregisterPlayer([9999n], { account: owner.account })
+      ).to.be.rejectedWith("Player not registered");
+    });
+
+    it("Should revert if non-owner tries to deregister", async function () {
+      const { sitioDates, player1 } = await loadFixture(deployWithPlayersFixture);
+
+      await expect(
+        sitioDates.write.deregisterPlayer([1001n], { account: player1.account })
+      ).to.be.rejectedWith("OwnableUnauthorizedAccount");
+    });
+
+    it("Should allow re-registration after deregistration", async function () {
+      const { sitioDates, owner, player1 } = await loadFixture(deployWithPlayersFixture);
+
+      await sitioDates.write.deregisterPlayer([1001n], { account: owner.account });
+
+      // Re-register with same FID
+      await sitioDates.write.registerPlayer(
+        [1001n, player1.account.address, parseEther("0.02")],
+        { account: owner.account }
+      );
+
+      expect(await sitioDates.read.isPlayerRegistered([1001n])).to.equal(true);
+      const player = await sitioDates.read.getPlayer([1001n]);
+      expect(player[2]).to.equal(parseEther("0.02")); // New price
+    });
+  });
+
+  describe("Pagination", function () {
+    it("Should paginate registered FIDs correctly", async function () {
+      const { sitioDates, owner, player1, player2, player3 } = await loadFixture(deploySitioDatesFixture);
+
+      // Register 3 players
+      await sitioDates.write.registerPlayer(
+        [1001n, player1.account.address, parseEther("0.01")],
+        { account: owner.account }
+      );
+      await sitioDates.write.registerPlayer(
+        [1002n, player2.account.address, parseEther("0.02")],
+        { account: owner.account }
+      );
+      await sitioDates.write.registerPlayer(
+        [1003n, player3.account.address, parseEther("0.03")],
+        { account: owner.account }
+      );
+
+      // Get first page (2 items)
+      const [page1, total1] = await sitioDates.read.getRegisteredFids([0n, 2n]);
+      expect(page1.length).to.equal(2);
+      expect(total1).to.equal(3n);
+      expect(page1[0]).to.equal(1001n);
+      expect(page1[1]).to.equal(1002n);
+
+      // Get second page (1 item)
+      const [page2, total2] = await sitioDates.read.getRegisteredFids([2n, 2n]);
+      expect(page2.length).to.equal(1);
+      expect(total2).to.equal(3n);
+      expect(page2[0]).to.equal(1003n);
+    });
+
+    it("Should return empty array when offset exceeds total", async function () {
+      const { sitioDates } = await loadFixture(deployWithPlayersFixture);
+
+      const [fids, total] = await sitioDates.read.getRegisteredFids([100n, 10n]);
+      expect(fids.length).to.equal(0);
+      expect(total).to.equal(2n);
+    });
+
+    it("Should return empty array when limit is 0", async function () {
+      const { sitioDates } = await loadFixture(deployWithPlayersFixture);
+
+      const [fids, total] = await sitioDates.read.getRegisteredFids([0n, 0n]);
+      expect(fids.length).to.equal(0);
+      expect(total).to.equal(2n);
+    });
+
+    it("Should handle limit larger than remaining items", async function () {
+      const { sitioDates } = await loadFixture(deployWithPlayersFixture);
+
+      const [fids, total] = await sitioDates.read.getRegisteredFids([0n, 100n]);
+      expect(fids.length).to.equal(2);
+      expect(total).to.equal(2n);
+    });
+
+    it("getRegisteredFidAt should return correct FID", async function () {
+      const { sitioDates } = await loadFixture(deployWithPlayersFixture);
+
+      expect(await sitioDates.read.getRegisteredFidAt([0n])).to.equal(1001n);
+      expect(await sitioDates.read.getRegisteredFidAt([1n])).to.equal(1002n);
+    });
+
+    it("getRegisteredFidAt should revert for out of bounds index", async function () {
+      const { sitioDates } = await loadFixture(deployWithPlayersFixture);
+
+      // viem read calls don't expose revert reasons, just check it rejects
+      await expect(
+        sitioDates.read.getRegisteredFidAt([100n])
+      ).to.be.rejected;
+    });
+
+    it("isFidInSet should return correct status", async function () {
+      const { sitioDates } = await loadFixture(deployWithPlayersFixture);
+
+      expect(await sitioDates.read.isFidInSet([1001n])).to.equal(true);
+      expect(await sitioDates.read.isFidInSet([1002n])).to.equal(true);
+      expect(await sitioDates.read.isFidInSet([9999n])).to.equal(false);
     });
   });
 
@@ -305,7 +499,8 @@ describe("SitioDates", function () {
         await loadFixture(deployWithPlayersFixture);
 
       const paymentAmount = parseEther("0.1");
-      const expectedPlatformShare = (paymentAmount * platformFeePercentage) / 100n;
+      const BASIS_POINTS = 10000n;
+      const expectedPlatformShare = (paymentAmount * platformFeePercentage) / BASIS_POINTS;
       const expectedPlayerShare = paymentAmount - expectedPlatformShare;
 
       const player1BalanceBefore = await publicClient.getBalance({
@@ -391,7 +586,7 @@ describe("SitioDates", function () {
     it("Should revert if player not active", async function () {
       const { sitioDates, owner, user1 } = await loadFixture(deployWithPlayersFixture);
 
-      await time.increase(3600);
+      // No cooldown needed for deactivation
       await sitioDates.write.deactivatePlayer([1001n], { account: owner.account });
 
       await expect(
@@ -486,15 +681,15 @@ describe("SitioDates", function () {
     it("Should allow owner to update platform fee", async function () {
       const { sitioDates, owner } = await loadFixture(deploySitioDatesFixture);
 
-      await sitioDates.write.setPlatformFee([10n], { account: owner.account });
+      await sitioDates.write.setPlatformFee([1000n], { account: owner.account }); // 10% in basis points
 
-      expect(await sitioDates.read.platformFeePercentage()).to.equal(10n);
+      expect(await sitioDates.read.platformFeePercentage()).to.equal(1000n);
     });
 
     it("Should emit PlatformFeeUpdated event", async function () {
       const { sitioDates, owner, publicClient } = await loadFixture(deploySitioDatesFixture);
 
-      const hash = await sitioDates.write.setPlatformFee([10n], {
+      const hash = await sitioDates.write.setPlatformFee([1000n], { // 10% in basis points
         account: owner.account,
       });
 
@@ -502,15 +697,15 @@ describe("SitioDates", function () {
       const logs = await sitioDates.getEvents.PlatformFeeUpdated();
 
       expect(logs.length).to.be.greaterThan(0);
-      expect(logs[0].args.oldFee).to.equal(5n);
-      expect(logs[0].args.newFee).to.equal(10n);
+      expect(logs[0].args.oldFee).to.equal(500n); // 5% in basis points
+      expect(logs[0].args.newFee).to.equal(1000n); // 10% in basis points
     });
 
     it("Should revert if fee too high", async function () {
       const { sitioDates, owner } = await loadFixture(deploySitioDatesFixture);
 
       await expect(
-        sitioDates.write.setPlatformFee([25n], { account: owner.account })
+        sitioDates.write.setPlatformFee([2500n], { account: owner.account }) // 25% exceeds 20% max
       ).to.be.rejectedWith("Fee too high");
     });
 
@@ -525,9 +720,9 @@ describe("SitioDates", function () {
     it("Should allow setting fee to max (20%)", async function () {
       const { sitioDates, owner } = await loadFixture(deploySitioDatesFixture);
 
-      await sitioDates.write.setPlatformFee([20n], { account: owner.account });
+      await sitioDates.write.setPlatformFee([2000n], { account: owner.account }); // 20% in basis points
 
-      expect(await sitioDates.read.platformFeePercentage()).to.equal(20n);
+      expect(await sitioDates.read.platformFeePercentage()).to.equal(2000n);
     });
   });
 
@@ -538,7 +733,7 @@ describe("SitioDates", function () {
       expect(await sitioDates.read.isPlayerActive([1001n])).to.equal(true);
       expect(await sitioDates.read.isPlayerActive([9999n])).to.equal(false);
 
-      await time.increase(3600);
+      // No cooldown needed for deactivation
       await sitioDates.write.deactivatePlayer([1001n], { account: owner.account });
 
       expect(await sitioDates.read.isPlayerActive([1001n])).to.equal(false);
@@ -569,7 +764,7 @@ describe("SitioDates", function () {
       expect(stats[0]).to.equal(1n); // totalDates
       expect(stats[1]).to.equal(parseEther("0.1")); // totalVolume
       expect(stats[2]).to.equal(2n); // totalPlayers
-      expect(stats[3]).to.equal(5n); // platformFee
+      expect(stats[3]).to.equal(500n); // platformFee (5% = 500 basis points)
     });
 
     it("calculatePaymentSplit should return correct amounts", async function () {
@@ -610,7 +805,8 @@ describe("SitioDates", function () {
       });
 
       const totalPayments = payment1 + payment2;
-      const expectedPlayerShare = (totalPayments * 95n) / 100n;
+      const BASIS_POINTS = 10000n;
+      const expectedPlayerShare = (totalPayments * 9500n) / BASIS_POINTS; // 95% = 9500 basis points
 
       expect(player1BalanceAfter - player1BalanceBefore).to.equal(expectedPlayerShare);
       expect(await sitioDates.read.totalDatesCount()).to.equal(2n);
@@ -620,8 +816,8 @@ describe("SitioDates", function () {
       const { sitioDates, owner, user1, player1, publicClient } =
         await loadFixture(deployWithPlayersFixture);
 
-      // Change fee to 10%
-      await sitioDates.write.setPlatformFee([10n], { account: owner.account });
+      // Change fee to 10% (1000 basis points)
+      await sitioDates.write.setPlatformFee([1000n], { account: owner.account });
 
       const paymentAmount = parseEther("1.0");
 

@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /**
  * @title SitioDates
@@ -10,17 +12,19 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  *         virtual dates with AI clones of registered players
  * @dev Players register via owner (gasless), users pay in native ETH
  */
-contract SitioDates is Ownable, ReentrancyGuard {
+contract SitioDates is Ownable, ReentrancyGuard, Pausable {
+    using EnumerableSet for EnumerableSet.UintSet;
+
     // ============================================
     // STRUCTS
     // ============================================
 
     struct Player {
-        uint256 fid;            // Farcaster ID
         address payable wallet; // Wallet to receive payments
         uint256 minPrice;       // Minimum ETH required for a date
         bool active;            // Whether player can receive dates
-        uint256 lastUpdated;    // Last update timestamp (for cooldown)
+        uint256 lastPriceUpdated;  // Last price update timestamp (for cooldown)
+        uint256 lastWalletUpdated; // Last wallet update timestamp (for cooldown)
         bool exists;            // Whether player is registered
     }
 
@@ -29,13 +33,16 @@ contract SitioDates is Ownable, ReentrancyGuard {
     // ============================================
 
     mapping(uint256 => Player) public players;  // fid => Player
-    uint256[] public registeredFids;            // Array of all registered FIDs
+    EnumerableSet.UintSet private _registeredFids;  // Set of all registered FIDs (O(1) add/remove)
 
     address payable public platformWallet;
-    uint256 public platformFeePercentage;       // e.g., 5 = 5%
+    uint256 public platformFeePercentage;       // In basis points (e.g., 500 = 5%)
 
-    uint256 public constant UPDATE_COOLDOWN = 1 hours;
-    uint256 public constant MAX_PLATFORM_FEE = 20; // Max 20%
+    uint256 public constant PRICE_UPDATE_COOLDOWN = 1 hours;
+    uint256 public constant WALLET_UPDATE_COOLDOWN = 24 hours;
+    // No cooldown for activation/deactivation
+    uint256 public constant BASIS_POINTS = 10000;  // 100% = 10000 basis points
+    uint256 public constant MAX_PLATFORM_FEE = 2000; // Max 20% = 2000 basis points
 
     uint256 public totalDatesCount;             // Total number of dates paid
     uint256 public totalVolumeETH;              // Total ETH volume
@@ -48,6 +55,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
         uint256 indexed fid,
         address indexed wallet,
         uint256 minPrice,
+        bool active,
         uint256 timestamp
     );
 
@@ -77,6 +85,11 @@ contract SitioDates is Ownable, ReentrancyGuard {
     event PlatformFeeUpdated(
         uint256 oldFee,
         uint256 newFee,
+        uint256 timestamp
+    );
+
+    event PlayerDeregistered(
+        uint256 indexed fid,
         uint256 timestamp
     );
 
@@ -115,17 +128,33 @@ contract SitioDates is Ownable, ReentrancyGuard {
         require(!players[_fid].exists, "Player already registered");
 
         players[_fid] = Player({
-            fid: _fid,
             wallet: _wallet,
             minPrice: _minPrice,
             active: true,
-            lastUpdated: block.timestamp,
+            lastPriceUpdated: block.timestamp,
+            lastWalletUpdated: block.timestamp,
             exists: true
         });
 
-        registeredFids.push(_fid);
+        _registeredFids.add(_fid);
 
-        emit PlayerRegistered(_fid, _wallet, _minPrice, block.timestamp);
+        emit PlayerRegistered(_fid, _wallet, _minPrice, true, block.timestamp);
+    }
+
+    /**
+     * @notice Deregister a player completely (removes from set)
+     * @param _fid Farcaster ID of the player to deregister
+     */
+    function deregisterPlayer(uint256 _fid) external onlyOwner {
+        require(players[_fid].exists, "Player not registered");
+
+        // Remove from set (O(1) operation)
+        _registeredFids.remove(_fid);
+
+        // Clear player data
+        delete players[_fid];
+
+        emit PlayerDeregistered(_fid, block.timestamp);
     }
 
     /**
@@ -134,6 +163,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
      * @param _wallet New wallet address
      * @param _minPrice New minimum price
      * @param _active Whether player is active
+     * @dev Wallet changes have 24h cooldown, price changes have 1h cooldown, activation has no cooldown
      */
     function updatePlayer(
         uint256 _fid,
@@ -143,16 +173,31 @@ contract SitioDates is Ownable, ReentrancyGuard {
     ) external onlyOwner {
         require(players[_fid].exists, "Player not registered");
         require(_wallet != address(0), "Invalid wallet");
-        require(
-            block.timestamp >= players[_fid].lastUpdated + UPDATE_COOLDOWN,
-            "Update cooldown not elapsed"
-        );
 
         Player storage player = players[_fid];
-        player.wallet = _wallet;
-        player.minPrice = _minPrice;
+
+        // Check wallet cooldown only if wallet is changing
+        if (_wallet != player.wallet) {
+            require(
+                block.timestamp >= player.lastWalletUpdated + WALLET_UPDATE_COOLDOWN,
+                "Wallet update cooldown not elapsed"
+            );
+            player.wallet = _wallet;
+            player.lastWalletUpdated = block.timestamp;
+        }
+
+        // Check price cooldown only if price is changing
+        if (_minPrice != player.minPrice) {
+            require(
+                block.timestamp >= player.lastPriceUpdated + PRICE_UPDATE_COOLDOWN,
+                "Price update cooldown not elapsed"
+            );
+            player.minPrice = _minPrice;
+            player.lastPriceUpdated = block.timestamp;
+        }
+
+        // No cooldown for activation/deactivation
         player.active = _active;
-        player.lastUpdated = block.timestamp;
 
         emit PlayerUpdated(_fid, _wallet, _minPrice, _active, block.timestamp);
     }
@@ -160,17 +205,14 @@ contract SitioDates is Ownable, ReentrancyGuard {
     /**
      * @notice Deactivate a player (shortcut for updatePlayer with active=false)
      * @param _fid Farcaster ID of the player
+     * @dev No cooldown for deactivation to allow emergency responses
      */
     function deactivatePlayer(uint256 _fid) external onlyOwner {
         require(players[_fid].exists, "Player not registered");
-        require(
-            block.timestamp >= players[_fid].lastUpdated + UPDATE_COOLDOWN,
-            "Update cooldown not elapsed"
-        );
+        require(players[_fid].active, "Player already inactive");
 
         Player storage player = players[_fid];
         player.active = false;
-        player.lastUpdated = block.timestamp;
 
         emit PlayerUpdated(
             _fid,
@@ -184,17 +226,14 @@ contract SitioDates is Ownable, ReentrancyGuard {
     /**
      * @notice Activate a player (shortcut for updatePlayer with active=true)
      * @param _fid Farcaster ID of the player
+     * @dev No cooldown for activation
      */
     function activatePlayer(uint256 _fid) external onlyOwner {
         require(players[_fid].exists, "Player not registered");
-        require(
-            block.timestamp >= players[_fid].lastUpdated + UPDATE_COOLDOWN,
-            "Update cooldown not elapsed"
-        );
+        require(!players[_fid].active, "Player already active");
 
         Player storage player = players[_fid];
         player.active = true;
-        player.lastUpdated = block.timestamp;
 
         emit PlayerUpdated(
             _fid,
@@ -219,8 +258,8 @@ contract SitioDates is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Update the platform fee percentage
-     * @param _newFee New fee percentage (0-20)
+     * @notice Update the platform fee in basis points
+     * @param _newFee New fee in basis points (0-2000, where 100 = 1%)
      */
     function setPlatformFee(uint256 _newFee) external onlyOwner {
         require(_newFee <= MAX_PLATFORM_FEE, "Fee too high");
@@ -231,6 +270,22 @@ contract SitioDates is Ownable, ReentrancyGuard {
         emit PlatformFeeUpdated(oldFee, _newFee, block.timestamp);
     }
 
+    /**
+     * @notice Pause the contract in case of emergency
+     * @dev Only callable by owner, prevents payForDate from being called
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause the contract after emergency is resolved
+     * @dev Only callable by owner
+     */
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
     // ============================================
     // PUBLIC FUNCTIONS
     // ============================================
@@ -239,15 +294,15 @@ contract SitioDates is Ownable, ReentrancyGuard {
      * @notice Pay to have a date with a player
      * @param _fid Farcaster ID of the player to date
      */
-    function payForDate(uint256 _fid) external payable nonReentrant {
+    function payForDate(uint256 _fid) external payable nonReentrant whenNotPaused {
         Player storage player = players[_fid];
 
         require(player.exists, "Player not registered");
         require(player.active, "Player not active");
         require(msg.value >= player.minPrice, "Payment below minimum price");
 
-        // Calculate fee distribution
-        uint256 platformShare = (msg.value * platformFeePercentage) / 100;
+        // Calculate fee distribution using basis points for precision
+        uint256 platformShare = (msg.value * platformFeePercentage) / BASIS_POINTS;
         uint256 playerShare = msg.value - platformShare;
 
         // Update statistics
@@ -283,7 +338,8 @@ contract SitioDates is Ownable, ReentrancyGuard {
      * @return wallet The payment wallet
      * @return minPrice Minimum price for a date
      * @return active Whether player is active
-     * @return lastUpdated Last update timestamp
+     * @return lastPriceUpdated Last price update timestamp
+     * @return lastWalletUpdated Last wallet update timestamp
      * @return exists Whether player is registered
      */
     function getPlayer(uint256 _fid) external view returns (
@@ -291,16 +347,18 @@ contract SitioDates is Ownable, ReentrancyGuard {
         address wallet,
         uint256 minPrice,
         bool active,
-        uint256 lastUpdated,
+        uint256 lastPriceUpdated,
+        uint256 lastWalletUpdated,
         bool exists
     ) {
         Player storage player = players[_fid];
         return (
-            player.fid,
+            _fid,
             player.wallet,
             player.minPrice,
             player.active,
-            player.lastUpdated,
+            player.lastPriceUpdated,
+            player.lastWalletUpdated,
             player.exists
         );
     }
@@ -334,14 +392,14 @@ contract SitioDates is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get time remaining until player can be updated
+     * @notice Get time remaining until player's price can be updated
      * @param _fid Farcaster ID
-     * @return Seconds until update is allowed (0 if already allowed)
+     * @return Seconds until price update is allowed (0 if already allowed)
      */
-    function getUpdateCooldownRemaining(uint256 _fid) external view returns (uint256) {
+    function getPriceCooldownRemaining(uint256 _fid) external view returns (uint256) {
         require(players[_fid].exists, "Player not registered");
 
-        uint256 cooldownEnd = players[_fid].lastUpdated + UPDATE_COOLDOWN;
+        uint256 cooldownEnd = players[_fid].lastPriceUpdated + PRICE_UPDATE_COOLDOWN;
         if (block.timestamp >= cooldownEnd) {
             return 0;
         }
@@ -349,11 +407,69 @@ contract SitioDates is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get all registered FIDs
-     * @return Array of all registered Farcaster IDs
+     * @notice Get time remaining until player's wallet can be updated
+     * @param _fid Farcaster ID
+     * @return Seconds until wallet update is allowed (0 if already allowed)
      */
-    function getAllRegisteredFids() external view returns (uint256[] memory) {
-        return registeredFids;
+    function getWalletCooldownRemaining(uint256 _fid) external view returns (uint256) {
+        require(players[_fid].exists, "Player not registered");
+
+        uint256 cooldownEnd = players[_fid].lastWalletUpdated + WALLET_UPDATE_COOLDOWN;
+        if (block.timestamp >= cooldownEnd) {
+            return 0;
+        }
+        return cooldownEnd - block.timestamp;
+    }
+
+    /**
+     * @notice Get registered FIDs with pagination
+     * @param _offset Starting index
+     * @param _limit Maximum number of FIDs to return
+     * @return fids Array of registered Farcaster IDs
+     * @return total Total number of registered players
+     */
+    function getRegisteredFids(uint256 _offset, uint256 _limit) external view returns (
+        uint256[] memory fids,
+        uint256 total
+    ) {
+        total = _registeredFids.length();
+        
+        if (_offset >= total || _limit == 0) {
+            return (new uint256[](0), total);
+        }
+
+        uint256 end = _offset + _limit;
+        if (end > total) {
+            end = total;
+        }
+
+        uint256 resultLength = end - _offset;
+        fids = new uint256[](resultLength);
+
+        for (uint256 i = 0; i < resultLength; i++) {
+            fids[i] = _registeredFids.at(_offset + i);
+        }
+
+        return (fids, total);
+    }
+
+    /**
+     * @notice Get a single registered FID by index
+     * @param _index Index in the set
+     * @return The FID at the given index
+     */
+    function getRegisteredFidAt(uint256 _index) external view returns (uint256) {
+        require(_index < _registeredFids.length(), "Index out of bounds");
+        return _registeredFids.at(_index);
+    }
+
+    /**
+     * @notice Check if an FID is in the registered set
+     * @param _fid Farcaster ID to check
+     * @return True if FID is registered
+     */
+    function isFidInSet(uint256 _fid) external view returns (bool) {
+        return _registeredFids.contains(_fid);
     }
 
     /**
@@ -361,7 +477,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
      * @return Count of registered players
      */
     function getTotalPlayersCount() external view returns (uint256) {
-        return registeredFids.length;
+        return _registeredFids.length();
     }
 
     /**
@@ -380,7 +496,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
         return (
             totalDatesCount,
             totalVolumeETH,
-            registeredFids.length,
+            _registeredFids.length(),
             platformFeePercentage
         );
     }
@@ -395,7 +511,7 @@ contract SitioDates is Ownable, ReentrancyGuard {
         uint256 playerShare,
         uint256 platformShare
     ) {
-        platformShare = (_amount * platformFeePercentage) / 100;
+        platformShare = (_amount * platformFeePercentage) / BASIS_POINTS;
         playerShare = _amount - platformShare;
         return (playerShare, platformShare);
     }
